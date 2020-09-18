@@ -8,9 +8,9 @@
 
 
 #define PREP_COALESCE 8
-#define R_COALESCE 8
+#define R_COALESCE 20
 
-#define MAX_PREP_WRS (1 + ((MACHINE_NUM * SESSIONS_PER_THREAD ) / PREP_COALESCE))
+#define MAX_PREP_WRS (1 + ((2 *MACHINE_NUM * SESSIONS_PER_THREAD ) / PREP_COALESCE))
 #define CR_PREP_MES_HEADER 12 // opcode(1), coalesce_num(1) l_id (8)
 
 
@@ -69,7 +69,7 @@ typedef struct cr_prep_message_ud_req {
 #define R_REP_RECV_SIZE (GRH_SIZE + ALIGNED_R_REP_SEND_SIDE)
 
 #define CR_RECV_R_REP_WRS (SESSIONS_PER_THREAD)
-#define CR_R_REP_WRS (CR_R_WRS * REM_MACH_NUM)
+#define CR_R_REP_WRS (SESSIONS_PER_THREAD * REM_MACH_NUM)
 
 #define R_REP_ENABLE_INLINING ((R_REP_SEND_SIZE > MAXIMUM_INLINE_SIZE) ?  0 : 1)
 #define R_REP_FIFO_SIZE (CR_RECV_R_WRS * R_COALESCE)
@@ -105,8 +105,8 @@ typedef struct cr_r_rep_small {
 
 
 typedef struct cr_r_rep_big {
-  uint64_t version;
   uint8_t opcode;
+  uint64_t version;
   uint8_t value[VALUE_SIZE];
 }__attribute__((__packed__)) cr_r_rep_big_t;
 

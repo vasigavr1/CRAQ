@@ -269,7 +269,7 @@ static inline void cr_insert_read_help(context_t *ctx, void *r_ptr,
   cr_r_rob_t *r_rob = (cr_r_rob_t *) get_fifo_push_slot(cr_ctx->r_rob);
   ctx_trace_op_t *op = source;
   cr_read_t *read = (cr_read_t *) r_ptr;
-
+  r_rob->version = ctx->ctx_tmp->counter;
   read->version = r_rob->version;
   read->key = op->key;
 
@@ -401,7 +401,7 @@ static inline bool cr_prepare_handler(context_t *ctx)
 
   fifo_t *w_rob_fifo = cr_ctx->w_rob;
   bool preps_fit_in_w_rob =
-    w_rob_fifo->capacity + coalesce_num <= CR_W_ROB_SIZE;
+    w_rob_fifo->capacity + coalesce_num <= CR_PREP_POLL_LIMIT;
 
   if (!preps_fit_in_w_rob) return false;
 
@@ -522,8 +522,9 @@ static inline bool cr_r_rep_handler(context_t *ctx)
     &incoming_r_reps[recv_fifo->pull_ptr].r_rep_mes;
   fifo_t *r_rob_fifo = cr_ctx->r_rob;
   if (DEBUG_READ_REPS)
-    my_printf(cyan, "WRKR %u: RECEIVING R_REP: l_id %u/%lu, coalesce_num %u \n",
-              ctx->t_id, r_rep_mes->l_id, cr_ctx->inserted_r_id, r_rep_mes->coalesce_num);
+    my_printf(cyan, "WRKR %u: RECEIVING R_REP: l_id %u/%lu, coalesce_num %u address %p \n",
+              ctx->t_id, r_rep_mes->l_id, cr_ctx->inserted_r_id,
+              r_rep_mes->coalesce_num, (void*) r_rep_mes);
   if (ENABLE_ASSERTIONS) {
     assert(r_rob_fifo->capacity > 0);
     assert(r_rep_mes->l_id == cr_ctx->committed_r_id);
@@ -535,9 +536,10 @@ static inline bool cr_r_rep_handler(context_t *ctx)
     cr_r_rep_big_t *r_rep = (cr_r_rep_big_t *) (((void *) r_rep_mes) + byte_ptr);
 
     if (DEBUG_READ_REPS)
-      my_printf(yellow, "Wrkr: %u R_rep %u/%u opcode %u, session %u, byte_ptr %u\n",
+      my_printf(yellow, "Wrkr: %u R_rep %u/%u opcode %u, session %u, byte_ptr %u, address %p\n",
                 ctx->t_id, r_rep_i, r_rep_mes->coalesce_num,
-                r_rep->opcode, r_rob->sess_id, byte_ptr);
+                r_rep->opcode, r_rob->sess_id, byte_ptr,
+                (void *) r_rep);
     check_state_with_allowed_flags(3, r_rep->opcode, VERSION_DIFF, VERSION_EQUAL);
     if (ENABLE_ASSERTIONS) {
       assert(r_rob->state == VALID);
@@ -547,7 +549,8 @@ static inline bool cr_r_rep_handler(context_t *ctx)
       byte_ptr += R_REP_BIG_SIZE;
       memcpy(r_rob->value_to_read, r_rep->value, VALUE_SIZE);
     }
-    else byte_ptr += R_REP_SMALL_SIZE;
+    else
+      byte_ptr += R_REP_SMALL_SIZE;
 
     cr_ctx->committed_r_id++;
     cr_ctx->stalled[r_rob->sess_id] = false;

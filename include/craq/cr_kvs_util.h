@@ -89,25 +89,6 @@ static inline void cr_head_write(context_t *ctx,
 ////------------------------------ REQ PROCESSING -----------------------------
 ////---------------------------------------------------------------------------*/
 
-static inline void cr_remote_read(context_t *ctx,
-                                  mica_op_t *kv_ptr,
-                                  ctx_trace_op_t *op)
-{
-  cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
-  cr_r_rob_t *r_rob = (cr_r_rob_t *) get_fifo_push_slot(cr_ctx->r_rob);
-
-  uint32_t debug_cntr = 0;
-  uint64_t tmp_lock = read_seqlock_lock_free(&kv_ptr->seqlock);
-  do {
-    debug_stalling_on_lock(&debug_cntr, "remote read", ctx->t_id);
-    memcpy(op->value_to_read, kv_ptr->value, (size_t) VALUE_SIZE);
-    r_rob->version = kv_ptr->version;
-  } while (!(check_seqlock_lock_free(&kv_ptr->seqlock, &tmp_lock)));
-
-
-  ctx_insert_mes(ctx, R_QP_ID, sizeof(cr_read_t),
-                 (uint32_t) R_REP_BIG_SIZE, false, op, NOT_USED, 0);
-}
 
 
 
@@ -157,12 +138,17 @@ static inline void cr_loc_read(context_t *ctx,
   }
   bool success = false;
   uint32_t debug_cntr = 0;
+  uint64_t version;
   uint64_t tmp_lock = read_seqlock_lock_free(&kv_ptr->seqlock);
   do {
     debug_stalling_on_lock(&debug_cntr, "local read", ctx->t_id);
     if (kv_ptr->state == CR_V) {
       memcpy(op->value_to_read, kv_ptr->value, (size_t) VALUE_SIZE);
       success = true;
+    }
+    else if (CR_REMOTE_READS) {
+      version = kv_ptr->version;
+      memcpy(op->value_to_read, kv_ptr->value, (size_t) VALUE_SIZE);
     }
   } while (!(check_seqlock_lock_free(&kv_ptr->seqlock, &tmp_lock)));
 
@@ -174,8 +160,13 @@ static inline void cr_loc_read(context_t *ctx,
     cr_ctx->stalled[op->session_id] = false;
   }
   else {
-    //my_printf(green, "Sess %u buffered \n", op->session_id);
-    cr_insert_buffered_op(ctx, kv_ptr, op);
+    if (CR_REMOTE_READS) {
+      ctx->ctx_tmp->counter = version;
+      ctx_insert_mes(ctx, R_QP_ID, sizeof(cr_read_t),
+                     (uint32_t) R_REP_BIG_SIZE, false, op, NOT_USED, 0);
+    }
+    else
+      cr_insert_buffered_op(ctx, kv_ptr, op);
   }
 }
 
@@ -227,9 +218,10 @@ static inline void cr_KVS_batch_op_trace(context_t *ctx, uint16_t op_num)
     else {
       //my_printf(yellow, "Sess %u starts read \n", op[op_i].session_id);
       cr_check_opcode_is_read(op, op_i);
-      if (CR_REMOTE_READS && !is_tail(ctx))
-        cr_remote_read(ctx, kv_ptr[op_i], &op[op_i]);
-      else cr_loc_read(ctx, kv_ptr[op_i], &op[op_i]);
+      //if (CR_REMOTE_READS && !is_tail(ctx))
+      //  cr_remote_read(ctx, kv_ptr[op_i], &op[op_i]);
+      //else
+        cr_loc_read(ctx, kv_ptr[op_i], &op[op_i]);
     }
   }
 }

@@ -115,9 +115,9 @@ static void cr_init_qp_meta(context_t *ctx)
                      "send preps", "recv preps");
 ////
 ////
-  crate_ack_qp_meta(&qp_meta[ACK_QP_ID],
-                    PREP_QP_ID, REM_MACH_NUM,
-                    REM_MACH_NUM, 5);
+  create_ack_qp_meta(&qp_meta[ACK_QP_ID],
+                     PREP_QP_ID, REM_MACH_NUM,
+                     REM_MACH_NUM, 5);
 
   if (ctx->m_id == CR_TAIL_NODE)
     create_per_qp_meta(&qp_meta[R_QP_ID], CR_R_REP_WRS,
