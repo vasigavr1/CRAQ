@@ -11,10 +11,15 @@ static inline void cr_checks_and_stats_on_bcasting_preps(context_t *ctx)
 {
   cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
   per_qp_meta_t *qp_meta = &ctx->qp_meta[PREP_QP_ID];
-  fifo_t *send_fifo = qp_meta->send_fifo;
+
+  bool steer_to_head = ctx->ctx_tmp->counter == STEER_TO_HEAD_FIFO_ID;
+  uint8_t fifo_i = steer_to_head ?
+                   (uint8_t) STEER_TO_HEAD_FIFO_ID :
+                   (uint8_t) CHAIN_PREP_FIFO_ID;
+  fifo_t *send_fifo = &qp_meta->send_fifo[fifo_i];
 
   // Create the broadcast messages
-  cr_prep_mes_t *prep_buf = (cr_prep_mes_t *) qp_meta->send_fifo->fifo;
+  cr_prep_mes_t *prep_buf = (cr_prep_mes_t *) send_fifo->fifo;
   cr_prep_mes_t *prep_mes = &prep_buf[send_fifo->pull_ptr];
 
   slot_meta_t *slot_meta = get_fifo_slot_meta_pull(send_fifo);
@@ -23,14 +28,18 @@ static inline void cr_checks_and_stats_on_bcasting_preps(context_t *ctx)
     assert(send_fifo->net_capacity >= coalesce_num);
     qp_meta->outstanding_messages += coalesce_num;
     assert(prep_mes->coalesce_num == (uint8_t) slot_meta->coalesce_num);
-    uint32_t backward_ptr = fifo_get_pull_backward_ptr(send_fifo);
+
     if (DEBUG_PREPARES)
       printf("Wrkr %d has %u prep_mes bcasts to send\n", ctx->t_id,
              send_fifo->net_capacity);
+
+    uint32_t backward_ptr = fifo_get_pull_backward_ptr(send_fifo);
     for (uint16_t i = 0; i < coalesce_num; i++) {
-      cr_w_rob_t *w_rob = (cr_w_rob_t *) get_fifo_slot_mod(cr_ctx->w_rob, backward_ptr + i);
-      if (ENABLE_ASSERTIONS) assert(w_rob->w_state == VALID);
-      w_rob->w_state = SENT;
+      if (!steer_to_head) {
+        cr_w_rob_t *w_rob = (cr_w_rob_t *) get_fifo_slot_mod(cr_ctx->w_rob, backward_ptr + i);
+        if (ENABLE_ASSERTIONS) assert(w_rob->w_state == VALID);
+        w_rob->w_state = SENT;
+      }
       if (DEBUG_PREPARES)
         printf("prep_mes %d, total message capacity %d\n",
                i,  slot_meta->byte_size);

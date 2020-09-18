@@ -9,6 +9,7 @@
 #include <netw_func.h>
 #include "kvs.h"
 #include "cr_config.h"
+#include "cr_generic_util.h"
 
 static inline void cr_check_opcode_is_read(ctx_trace_op_t *op,
                                            uint16_t op_i)
@@ -34,6 +35,7 @@ static inline void cr_insert_buffered_op(context_t *ctx,
 
   fifo_incr_push_ptr(cr_ctx->buf_reads);
   fifo_increm_capacity(cr_ctx->buf_reads);
+  //printf("capacity %u\n", cr_ctx->buf_reads->capacity);
 }
 
 
@@ -43,7 +45,7 @@ static inline void cr_rem_prep(context_t *ctx,
 {
 
   if (ENABLE_ASSERTIONS)
-    assert(ctx->m_id != CR_HEAD_NODE);
+    assert(!is_head(ctx));
 
   lock_seqlock(&kv_ptr->seqlock);
   if (prep->version > kv_ptr->version) {
@@ -52,6 +54,13 @@ static inline void cr_rem_prep(context_t *ctx,
     memcpy(kv_ptr->value, prep->value, VALUE_SIZE);
   }
   unlock_seqlock(&kv_ptr->seqlock);
+
+  if (is_tail(ctx)) {
+    if (ctx->m_id == prep->m_id) {
+      cr_free_session(ctx, prep->sess_id);
+    }
+  }
+
 }
 
 static inline void cr_head_write(context_t *ctx,
@@ -60,11 +69,11 @@ static inline void cr_head_write(context_t *ctx,
                                  cr_w_rob_t *w_rob,
                                  source_t source_flag)
 {
-  uint8_t *value_ptr = source_flag == LOCAL_PREP ?
+  uint8_t *value_ptr = source_flag == CR_LOCAL_PREP ?
                        ((ctx_trace_op_t *) source)->value_to_write :
-                       ((cr_write_t *) source)->value;
+                       ((cr_prep_t *) source)->value;
   if (ENABLE_ASSERTIONS)
-    assert(ctx->m_id == CR_HEAD_NODE);
+    assert(is_head(ctx));
 
   lock_seqlock(&kv_ptr->seqlock);
   {
@@ -85,21 +94,18 @@ static inline void cr_head_write(context_t *ctx,
 static inline void cr_loc_or_rem_write_or_prep(context_t *ctx,
                                                mica_op_t *kv_ptr,
                                                void *source,
-                                               source_t source_flag,
-                                               uint8_t m_id)
+                                               source_t source_flag)
 {
   cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
   cr_w_rob_t *w_rob = (cr_w_rob_t *)
     get_fifo_push_slot(cr_ctx->w_rob);
 
-
-
   switch (source_flag) {
-    case LOCAL_PREP:
-    case REMOTE_WRITE:
+    case CR_LOCAL_PREP:
+    case STEERED_PREP:
       cr_head_write(ctx, kv_ptr,source, w_rob, source_flag);
       break;
-    case REMOTE_PREP:
+    case CHAIN_PREP:
       cr_rem_prep(ctx, kv_ptr, (cr_prep_t *) source);
       break;
     case NOT_USED:
@@ -108,12 +114,12 @@ static inline void cr_loc_or_rem_write_or_prep(context_t *ctx,
 
   if (ctx->m_id != CR_TAIL_NODE) {
     if (ENABLE_ASSERTIONS) assert(w_rob->w_state == INVALID);
-    w_rob->owner_m_id = m_id;
+    //w_rob->owner_m_id = m_id;
     w_rob->kv_ptr = kv_ptr;
     w_rob->w_state = SEMIVALID;
 
     ctx_insert_mes(ctx, PREP_QP_ID, sizeof(cr_prep_t), 1,
-                   false, source, source_flag, 0);
+                   false, source, source_flag, CHAIN_PREP_FIFO_ID);
   }
   //else printf("Reached Tail node \n");
 }
@@ -122,8 +128,8 @@ static inline void cr_loc_or_rem_write_or_prep(context_t *ctx,
 
 
 static inline void cr_loc_read(context_t *ctx,
-                                mica_op_t *kv_ptr,
-                                ctx_trace_op_t *op)
+                               mica_op_t *kv_ptr,
+                               ctx_trace_op_t *op)
 {
   if (ENABLE_ASSERTIONS) {
     assert(op->value_to_read != NULL);
@@ -141,13 +147,16 @@ static inline void cr_loc_read(context_t *ctx,
   } while (!(check_seqlock_lock_free(&kv_ptr->seqlock, &tmp_lock)));
 
   if (success) {
-    //printf("success \n");
+    //my_printf(green, "Sess %u success \n", op->session_id);
     cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
     signal_completion_to_client(op->session_id, op->index_to_req_array, ctx->t_id);
     cr_ctx->all_sessions_stalled = false;
     cr_ctx->stalled[op->session_id] = false;
   }
-  else cr_insert_buffered_op(ctx, kv_ptr, op);
+  else {
+    //my_printf(green, "Sess %u buffered \n", op->session_id);
+    cr_insert_buffered_op(ctx, kv_ptr, op);
+  }
 }
 
 
@@ -162,7 +171,8 @@ static inline void cr_KVS_batch_op_trace(context_t *ctx, uint16_t op_num)
   uint16_t op_i;
   if (ENABLE_ASSERTIONS) {
     assert(op != NULL);
-    assert(op_num > 0 && op_num <= CR_TRACE_BATCH);
+    assert(op_num <= CR_TRACE_BATCH);
+    assert(op_num > 0 || cr_ctx->buf_reads->capacity > 0);
   }
 
   unsigned int bkt[CR_TRACE_BATCH];
@@ -181,6 +191,7 @@ static inline void cr_KVS_batch_op_trace(context_t *ctx, uint16_t op_num)
   for (op_i = 0; op_i < buf_ops_num; ++op_i) {
     cr_buf_op_t *buf_read = (cr_buf_op_t *) get_fifo_pull_slot(cr_ctx->buf_reads);
     check_state_with_allowed_flags(2, buf_read->op.opcode,  KVS_OP_GET);
+    //my_printf(cyan, "Buffered op sess %u \n", buf_read->op.session_id);
     cr_loc_read(ctx, buf_read->kv_ptr, &buf_read->op);
     fifo_incr_pull_ptr(cr_ctx->buf_reads);
     fifo_decrem_capacity(cr_ctx->buf_reads);
@@ -191,9 +202,10 @@ static inline void cr_KVS_batch_op_trace(context_t *ctx, uint16_t op_num)
     KVS_check_key(kv_ptr[op_i], op[op_i].key, op_i);
 
     if (op[op_i].opcode == KVS_OP_PUT) {
-      cr_loc_or_rem_write_or_prep(ctx, kv_ptr[op_i], &op[op_i], LOCAL_PREP, ctx->m_id);
+      cr_loc_or_rem_write_or_prep(ctx, kv_ptr[op_i], &op[op_i], CR_LOCAL_PREP);
     }
     else {
+      //my_printf(yellow, "Sess %u starts read \n", op[op_i].session_id);
       cr_check_opcode_is_read(op, op_i);
       cr_loc_read(ctx, kv_ptr[op_i], &op[op_i]);
     }
@@ -204,7 +216,6 @@ static inline void cr_KVS_batch_op_preps(context_t *ctx)
 {
   cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
   cr_ptrs_to_op_t *ptrs_to_prep = cr_ctx->ptrs_to_ops;
-  cr_prep_mes_t **prep_mes = (cr_prep_mes_t **) cr_ctx->ptrs_to_ops->ptr_to_mes;
   cr_prep_t **preps = (cr_prep_t **) ptrs_to_prep->ops;
   uint16_t op_num = ptrs_to_prep->op_num;
 
@@ -226,7 +237,8 @@ static inline void cr_KVS_batch_op_preps(context_t *ctx)
 
   for(op_i = 0; op_i < op_num; op_i++) {
     KVS_check_key(kv_ptr[op_i], preps[op_i]->key, op_i);
-    cr_loc_or_rem_write_or_prep(ctx, kv_ptr[op_i], preps[op_i], REMOTE_PREP, prep_mes[op_i]->m_id);
+    cr_loc_or_rem_write_or_prep(ctx, kv_ptr[op_i], preps[op_i],
+                                is_head(ctx) ? STEERED_PREP : CHAIN_PREP);
   }
 }
 

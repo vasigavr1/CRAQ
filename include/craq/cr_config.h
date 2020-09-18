@@ -19,16 +19,21 @@
 #define QP_NUM 2
 #define PREP_QP_ID 0
 #define ACK_QP_ID 1
-#define COM_QP_ID 2
-#define W_QP_ID 3
+
 
 #define CR_TRACE_BATCH SESSIONS_PER_THREAD
-#define CR_W_ROB_SIZE (MACHINE_NUM * SESSIONS_PER_THREAD)
+#define CR_W_ROB_SIZE (1 * MACHINE_NUM * SESSIONS_PER_THREAD)
 #define CR_PREP_FIFO_SIZE (CR_W_ROB_SIZE)
 #define CR_MAX_INCOMING_PREP CR_W_ROB_SIZE
 
 #define MAX_RECV_PREP_WRS (CR_MAX_INCOMING_PREP)
 #define PREP_BUF_SLOTS (MAX_RECV_PREP_WRS)
+
+
+/// Non head nodes need to send-fifos for prepares
+/// one for the chain propagation and one to send to the head
+#define CHAIN_PREP_FIFO_ID 0
+#define STEER_TO_HEAD_FIFO_ID 1
 
 /*------------------------------------------------
  * ----------------KVS----------------------------
@@ -62,7 +67,7 @@ typedef enum op_state {INVALID, SEMIVALID,
   VALID, SENT,
   READY, SEMI_INVALID} w_state_t;
 
-typedef enum {NOT_USED, LOCAL_PREP, REMOTE_WRITE, REMOTE_PREP} source_t;
+typedef enum {NOT_USED, CR_LOCAL_PREP, STEERED_PREP, CHAIN_PREP} source_t;
 
 typedef struct cr_w_rob {
 

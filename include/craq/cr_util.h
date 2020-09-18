@@ -39,22 +39,9 @@ static void cr_qp_meta_mfs(context_t *ctx)
   mfs[PREP_QP_ID].send_helper = cr_send_preps_helper;
   mfs[PREP_QP_ID].insert_helper = cr_insert_prep_help;
   mfs[PREP_QP_ID].recv_kvs = cr_KVS_batch_op_preps;
-  ////mfs[PREP_QP_ID].polling_debug = cr_debug_info_bookkeep;
-  //
-  //
+
   mfs[ACK_QP_ID].recv_handler = cr_ack_handler;
-  //mfs[ACK_QP_ID].send_helper = cr_send_acks_helper;
-  //
-  //mfs[COM_QP_ID].recv_handler = cr_commit_handler;
-  //mfs[COM_QP_ID].send_helper = cr_send_commits_helper;
-  ////mfs[COMMIT_W_QP_ID].polling_debug = cr_debug_info_bookkeep;
-  ////
-  ////mfs[R_QP_ID].recv_handler = r_handler;
-  ////
-  //mfs[W_QP_ID].recv_handler = cr_write_handler;
-  //mfs[W_QP_ID].insert_helper = cr_insert_write_help;
-  //mfs[W_QP_ID].send_helper = cr_send_writes_helper;
-  //mfs[W_QP_ID].recv_kvs = cr_KVS_batch_op_writes;
+
 
 
 
@@ -65,14 +52,7 @@ static void cr_qp_meta_mfs(context_t *ctx)
 
 static void cr_init_send_fifos(context_t *ctx)
 {
-  //fifo_t *send_fifo = ctx->qp_meta[COM_QP_ID].send_fifo;
-  //ctx_com_mes_t *commits = (ctx_com_mes_t *) send_fifo->fifo;
-  //
-  //for (uint32_t i = 0; i < COMMIT_FIFO_SIZE; i++) {
-  //  commits[i].opcode = COMMIT_OP;
-  //  commits[i].m_id = ctx->m_id;
-  //}
-  ////
+
   ctx_ack_mes_t *ack_send_buf = (ctx_ack_mes_t *) ctx->qp_meta[ACK_QP_ID].send_fifo->fifo; //calloc(MACHINE_NUM, sizeof(ctx_ack_mes_t));
   assert(ctx->qp_meta[ACK_QP_ID].send_fifo->max_byte_size == CTX_ACK_SIZE * MACHINE_NUM);
   memset(ack_send_buf, 0, ctx->qp_meta[ACK_QP_ID].send_fifo->max_byte_size);
@@ -81,25 +61,20 @@ static void cr_init_send_fifos(context_t *ctx)
     ack_send_buf[i].opcode = OP_ACK;
   }
   //
-  cr_prep_mes_t *preps = (cr_prep_mes_t *) ctx->qp_meta[PREP_QP_ID].send_fifo->fifo;
-  for (int i = 0; i < CR_PREP_FIFO_SIZE; i++) {
-    ctx->qp_meta[PREP_QP_ID].send_fifo->slot_meta[i].rm_id =
-      (uint8_t) (ctx->m_id + 1);
-    preps[i].opcode = KVS_OP_PUT;
-    preps[i].m_id = ctx->m_id;
-    for (uint16_t j = 0; j < PREP_COALESCE; j++) {
+  for (int fifo_i = 0; fifo_i < ctx->qp_meta[PREP_QP_ID].send_fifo_num; ++fifo_i) {
+    cr_prep_mes_t *preps = (cr_prep_mes_t *) ctx->qp_meta[PREP_QP_ID].send_fifo[fifo_i].fifo;
+    for (int i = 0; i < CR_PREP_FIFO_SIZE; i++) {
+
+      ctx->qp_meta[PREP_QP_ID].send_fifo[fifo_i].slot_meta[i].rm_id =
+        fifo_i == CHAIN_PREP_FIFO_ID ?
+        (uint8_t) (ctx->m_id + 1) :  (uint8_t) CR_HEAD_NODE;
+      preps[i].opcode = KVS_OP_PUT;
+      preps[i].m_id = ctx->m_id;
+      for (uint16_t j = 0; j < PREP_COALESCE; j++) {
+      }
     }
   }
-  //
-  //for (int fifo_i = 0; fifo_i < ctx->qp_meta[W_QP_ID].send_fifo_num; ++fifo_i) {
-  //  cr_w_mes_t *w_mes = (cr_w_mes_t *) ctx->qp_meta[W_QP_ID].send_fifo[fifo_i].fifo;
-  //  for (int i = 0; i < cr_W_FIFO_SIZE; i++) {
-  //    w_mes[i].opcode = KVS_OP_PUT;
-  //    w_mes[i].m_id = ctx->m_id;
-  //    for (uint16_t j = 0; j < cr_W_COALESCE; j++) {
-  //    }
-  //  }
-  //}
+
 }
 
 
@@ -110,7 +85,7 @@ static void cr_init_qp_meta(context_t *ctx)
   create_per_qp_meta(&qp_meta[PREP_QP_ID], MAX_PREP_WRS,
                      MAX_RECV_PREP_WRS, SEND_UNI_REQ_RECV_UNI_REQ, RECV_REQ,
                      ACK_QP_ID,
-                     1, 1, PREP_BUF_SLOTS,
+                     2, 2, PREP_BUF_SLOTS,
                      sizeof(cr_prep_mes_ud_t), sizeof(cr_prep_mes_t), false, false,
                      0, 0, CR_PREP_FIFO_SIZE,
                      0, CR_PREP_MES_HEADER,
@@ -120,24 +95,7 @@ static void cr_init_qp_meta(context_t *ctx)
   crate_ack_qp_meta(&qp_meta[ACK_QP_ID],
                     PREP_QP_ID, REM_MACH_NUM,
                     REM_MACH_NUM, 5);
-////
-//  create_per_qp_meta(&qp_meta[COM_QP_ID], COM_WRS,
-//                     RECV_COM_WRS, SEND_BCAST_RECV_BCAST, RECV_SEC_ROUND,
-//                     COM_QP_ID,
-//                     REM_MACH_NUM, REM_MACH_NUM, COM_BUF_SLOTS,
-//                     CTX_COM_RECV_SIZE, CTX_COM_SEND_SIZE, ENABLE_MULTICAST, ENABLE_MULTICAST,
-//                     cr_COM_MCAST_QP, 0, COMMIT_FIFO_SIZE,
-//                     COM_CREDITS, CTX_COM_SEND_SIZE,
-//                     "send commits", "recv commits");
-//
-//  create_per_qp_meta(&qp_meta[W_QP_ID], cr_MAX_W_WRS,
-//                     cr_MAX_RECV_W_WRS, SEND_UNI_REQ_RECV_UNI_REQ, RECV_REQ,
-//                     W_QP_ID,
-//                     REM_MACH_NUM, REM_MACH_NUM, cr_BUF_SLOTS,
-//                     sizeof(cr_w_mes_ud_t), sizeof(cr_w_mes_t), false, false,
-//                     0, 0, cr_W_FIFO_SIZE,
-//                     0, cr_W_HEADER,
-//                     "send writes", "recv writes");
+
 
 
   cr_qp_meta_mfs(ctx);
