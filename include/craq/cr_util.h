@@ -42,7 +42,17 @@ static void cr_qp_meta_mfs(context_t *ctx)
 
   mfs[ACK_QP_ID].recv_handler = cr_ack_handler;
 
+  if (ctx->m_id == CR_TAIL_NODE) {
+    mfs[R_QP_ID].insert_helper = cr_insert_r_rep_help;
+    mfs[R_QP_ID].recv_handler = cr_r_handler;
+    mfs[R_QP_ID].send_helper = cr_send_r_reps_helper;
+    mfs[R_QP_ID].recv_kvs = cr_KVS_batch_op_reads;
+  }
+  else {
+    mfs[R_QP_ID].insert_helper = cr_insert_read_help;
+    mfs[R_QP_ID].recv_handler = cr_r_rep_handler;
 
+  }
 
 
   ctx_set_qp_meta_mfs(ctx, mfs);
@@ -75,6 +85,19 @@ static void cr_init_send_fifos(context_t *ctx)
     }
   }
 
+  if (ctx->m_id != CR_TAIL_NODE) {
+    cr_r_mes_t *r_mes = (cr_r_mes_t *) ctx->qp_meta[R_QP_ID].send_fifo->fifo;
+    for (int i = 0; i < R_FIFO_SIZE; i++) {
+
+      ctx->qp_meta[R_QP_ID].send_fifo->slot_meta[i].rm_id =
+        (uint8_t) CR_TAIL_NODE;
+      r_mes[i].m_id = ctx->m_id;
+      for (uint16_t j = 0; j < R_COALESCE; j++) {
+        r_mes[i].read[j].opcode = KVS_OP_GET;
+      }
+    }
+  }
+
 }
 
 
@@ -95,6 +118,23 @@ static void cr_init_qp_meta(context_t *ctx)
   crate_ack_qp_meta(&qp_meta[ACK_QP_ID],
                     PREP_QP_ID, REM_MACH_NUM,
                     REM_MACH_NUM, 5);
+
+  if (ctx->m_id == CR_TAIL_NODE)
+    create_per_qp_meta(&qp_meta[R_QP_ID], CR_R_REP_WRS,
+                       CR_RECV_R_WRS, SEND_UNI_REP_LDR_RECV_UNI_REQ, RECV_REQ,
+                       R_QP_ID,
+                       REM_MACH_NUM, REM_MACH_NUM, CR_R_BUF_SLOTS,
+                       sizeof(cr_r_mes_ud_t), sizeof(cr_r_rep_mes_t), false, false,
+                       0, CR_TAIL_NODE, R_REP_FIFO_SIZE, 0, R_REP_MES_HEADER,
+                       "send r_Reps", "recv reads");
+  else
+    create_per_qp_meta(&qp_meta[R_QP_ID], CR_R_WRS,
+                       CR_RECV_R_REP_WRS, SEND_UNI_REQ_RECV_LDR_REP, RECV_REPLY,
+                       R_QP_ID, 1, 1, CR_RECV_R_REP_WRS,
+                       sizeof(cr_r_rep_mes_ud_t), sizeof(cr_r_mes_t), false, false,
+                       0, CR_TAIL_NODE, R_FIFO_SIZE,
+                       0, CR_R_MES_HEADER,
+                       "send reads", "recv read_replies");
 
 
 
@@ -128,6 +168,10 @@ static void* set_up_cr_ctx(context_t *ctx)
   cr_ctx->ptrs_to_ops = calloc(1, sizeof(cr_ptrs_to_op_t));
   cr_ctx->ptrs_to_ops->ops = calloc(CR_MAX_INCOMING_PREP, sizeof(void*));
   cr_ctx->ptrs_to_ops->ptr_to_mes = calloc(CR_MAX_INCOMING_PREP, sizeof(void*));
+  cr_ctx->ptrs_to_ops->coalesce = calloc(CR_MAX_INCOMING_PREP, sizeof(bool));
+  if (ctx->m_id != CR_TAIL_NODE)
+    cr_ctx->r_rob = fifo_constructor(SESSIONS_PER_THREAD,
+                                     sizeof(cr_r_rob_t), false, 0, 1);
 
   if (!ENABLE_CLIENTS)
     cr_ctx->trace = trace_init(ctx->t_id);

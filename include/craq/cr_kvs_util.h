@@ -89,6 +89,26 @@ static inline void cr_head_write(context_t *ctx,
 ////------------------------------ REQ PROCESSING -----------------------------
 ////---------------------------------------------------------------------------*/
 
+static inline void cr_remote_read(context_t *ctx,
+                                  mica_op_t *kv_ptr,
+                                  ctx_trace_op_t *op)
+{
+  cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
+  cr_r_rob_t *r_rob = (cr_r_rob_t *) get_fifo_push_slot(cr_ctx->r_rob);
+
+  uint32_t debug_cntr = 0;
+  uint64_t tmp_lock = read_seqlock_lock_free(&kv_ptr->seqlock);
+  do {
+    debug_stalling_on_lock(&debug_cntr, "remote read", ctx->t_id);
+    memcpy(op->value_to_read, kv_ptr->value, (size_t) VALUE_SIZE);
+    r_rob->version = kv_ptr->version;
+  } while (!(check_seqlock_lock_free(&kv_ptr->seqlock, &tmp_lock)));
+
+
+  ctx_insert_mes(ctx, R_QP_ID, sizeof(cr_read_t),
+                 (uint32_t) R_REP_BIG_SIZE, false, op, NOT_USED, 0);
+}
+
 
 
 static inline void cr_loc_or_rem_write_or_prep(context_t *ctx,
@@ -207,7 +227,9 @@ static inline void cr_KVS_batch_op_trace(context_t *ctx, uint16_t op_num)
     else {
       //my_printf(yellow, "Sess %u starts read \n", op[op_i].session_id);
       cr_check_opcode_is_read(op, op_i);
-      cr_loc_read(ctx, kv_ptr[op_i], &op[op_i]);
+      if (CR_REMOTE_READS && !is_tail(ctx))
+        cr_remote_read(ctx, kv_ptr[op_i], &op[op_i]);
+      else cr_loc_read(ctx, kv_ptr[op_i], &op[op_i]);
     }
   }
 }
@@ -241,5 +263,41 @@ static inline void cr_KVS_batch_op_preps(context_t *ctx)
                                 is_head(ctx) ? STEERED_PREP : CHAIN_PREP);
   }
 }
+
+
+static inline void cr_KVS_batch_op_reads(context_t *ctx)
+{
+  cr_ctx_t *cr_ctx = (cr_ctx_t *) ctx->appl_ctx;
+  uint16_t op_i;  /* op_i is batch index */
+  cr_ptrs_to_op_t *ptrs_to_r = cr_ctx->ptrs_to_ops;
+  uint16_t op_num =  ptrs_to_r->op_num;
+  if (op_num == 0) return;
+  if (ENABLE_ASSERTIONS) {
+    assert(op_num > 0 && op_num <= CR_MAX_INCOMING_R);
+  }
+
+  unsigned int bkt[CR_MAX_INCOMING_R];
+  struct mica_bkt *bkt_ptr[CR_MAX_INCOMING_R];
+  unsigned int tag[CR_MAX_INCOMING_R];
+  mica_op_t *kv_ptr[CR_MAX_INCOMING_R];	/* Ptr to KV item in log */
+
+  for(op_i = 0; op_i < op_num; op_i++) {
+    cr_read_t *read = ptrs_to_r->ops[op_i];
+    KVS_locate_one_bucket(op_i, bkt, &read->key, bkt_ptr, tag, kv_ptr, KVS);
+  }
+  KVS_locate_all_kv_pairs(op_num, tag, bkt_ptr, kv_ptr, KVS);
+
+  for(op_i = 0; op_i < op_num; op_i++) {
+    cr_read_t *read = ptrs_to_r->ops[op_i];
+    KVS_check_key(kv_ptr[op_i], read->key, op_i);
+    if (ENABLE_ASSERTIONS) assert(read->opcode == KVS_OP_GET);
+
+    ctx_insert_mes(ctx, R_QP_ID, R_REP_SMALL_SIZE, 0,
+                   !ptrs_to_r->coalesce[op_i],
+                   (void *) kv_ptr[op_i], op_i, 0);
+
+  }
+}
+
 
 #endif //ODYSSEY_CR_KVS_UTIL_H

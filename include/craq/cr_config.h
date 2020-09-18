@@ -16,18 +16,25 @@
 
 
 
-#define QP_NUM 2
+#define QP_NUM 3
 #define PREP_QP_ID 0
 #define ACK_QP_ID 1
+#define R_QP_ID 2
 
 
 #define CR_TRACE_BATCH SESSIONS_PER_THREAD
 #define CR_W_ROB_SIZE (1 * MACHINE_NUM * SESSIONS_PER_THREAD)
 #define CR_PREP_FIFO_SIZE (CR_W_ROB_SIZE)
 #define CR_MAX_INCOMING_PREP CR_W_ROB_SIZE
+#define CR_MAX_INCOMING_R CR_W_ROB_SIZE
+
+#define CR_REMOTE_READS 1
 
 #define MAX_RECV_PREP_WRS (CR_MAX_INCOMING_PREP)
 #define PREP_BUF_SLOTS (MAX_RECV_PREP_WRS)
+
+#define R_FIFO_SIZE (SESSIONS_PER_THREAD + 1)
+
 
 
 /// Non head nodes need to send-fifos for prepares
@@ -65,9 +72,24 @@ typedef enum{CR_V = 0, CR_INV} key_state_t;
 
 typedef enum op_state {INVALID, SEMIVALID,
   VALID, SENT,
-  READY, SEMI_INVALID} w_state_t;
+  READY, SEMI_INVALID} cr_state_t;
 
 typedef enum {NOT_USED, CR_LOCAL_PREP, STEERED_PREP, CHAIN_PREP} source_t;
+
+typedef struct cr_r_rob {
+  bool seen_larger_g_id;
+  uint8_t opcode;
+  mica_key_t key;
+  //uint8_t value[VALUE_SIZE]; //
+  uint8_t *value_to_read;
+  uint32_t state;
+  uint32_t log_no;
+  uint32_t val_len;
+  uint32_t sess_id;
+  uint64_t version;
+  uint64_t l_id;
+} cr_r_rob_t;
+
 
 typedef struct cr_w_rob {
 
@@ -77,7 +99,7 @@ typedef struct cr_w_rob {
   uint16_t sess_id;
   uint16_t id;
 
-  w_state_t w_state;
+  cr_state_t w_state;
   uint8_t owner_m_id;
   uint8_t val_len;
 } cr_w_rob_t;
@@ -96,12 +118,14 @@ typedef struct ptrs_to_prep {
   uint16_t op_num;
   void **ops;
   void **ptr_to_mes;
+  bool *coalesce;
 } cr_ptrs_to_op_t;
 
 // A data structute that keeps track of the outstanding writes
 typedef struct cr_ctx {
   // reorder buffers
   fifo_t *w_rob;
+  fifo_t *r_rob;
   //fifo_t *loc_w_rob; //points in the w_rob
 
 
@@ -119,6 +143,8 @@ typedef struct cr_ctx {
 
   uint64_t inserted_w_id;
   uint64_t committed_w_id;
+  uint64_t inserted_r_id;
+  uint64_t committed_r_id;
 
   uint32_t *index_to_req_array; // [SESSIONS_PER_THREAD]
   bool *stalled;
